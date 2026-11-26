@@ -16,7 +16,7 @@ static uint32_t g_queue[2048];
 static int g_qn, g_qi;
 static int g_show_back;
 static int g_scroll;
-static uint32_t g_reveal;
+static uint64_t g_reveal;
 static int64_t g_deck;
 static char g_title[64];
 static int g_dirty;
@@ -72,15 +72,30 @@ static int utf8_len(const char* s) {
 
 /* Draw wrapped text inside the box; returns the y after the last drawn line. */
 /* Draw wrapped text; skip the first `skip` lines. Returns the y after the last painted line. */
+static char* g_linebuf;
+static int g_linecap;
+
+static int linebuf_need(int n) {
+  if (n <= g_linecap) return 1;
+  int cap = g_linecap ? g_linecap : 1024;
+  while (cap < n) cap *= 2;
+  char* p = (char*)realloc(g_linebuf, (size_t)cap);
+  if (!p) return 0;
+  g_linebuf = p;
+  g_linecap = cap;
+  return 1;
+}
+
 static int draw_wrapped_skip(const char* text, int x, int y, int w, int max_y, int font, bool bold, int skip, int* drawn) {
   int lh = bobo_line_height(font) + px(4);
   int cur_y = y, line_w = 0, idx = 0, n_drawn = 0;
-  char buf[2048];
+  if (!linebuf_need((int)strlen(text) + 1)) return y;
+  char* buf = g_linebuf;
   const char* line_start = text;
   for (const char* p = text;;) {
     if (!*p || *p == '\n') {
       int n = (int)(p - line_start);
-      if (n > (int)sizeof(buf) - 1) n = (int)sizeof(buf) - 1;
+      if (n >= g_linecap) n = g_linecap - 1;
       memcpy(buf, line_start, (size_t)n);
       buf[n] = 0;
       if (idx >= skip && cur_y + lh <= max_y) {
@@ -105,7 +120,7 @@ static int draw_wrapped_skip(const char* text, int x, int y, int w, int max_y, i
     int cw = bobo_text_width(font, ch, bold);
     if (line_w + cw > w && p != line_start) {
       int n = (int)(p - line_start);
-      if (n > (int)sizeof(buf) - 1) n = (int)sizeof(buf) - 1;
+      if (n >= g_linecap) n = g_linecap - 1;
       memcpy(buf, line_start, (size_t)n);
       buf[n] = 0;
       if (idx >= skip && cur_y + lh <= max_y) {
@@ -256,7 +271,7 @@ static void draw_line_card(card_t* c, int margin, int y, int w, int bottom) {
   int i, n = c->nlines;
   int lh = bobo_line_height(BOBO_FONT_TITLE) + px(4);
   /* title / author line kept at the top of the front text */
-  char head[ANKI_TEXT_MAX];
+  char head[512];
   int hn = 0;
   if (c->front) {
     while (c->front[hn] && c->front[hn] != '\n' && hn < (int)sizeof(head) - 1) {
@@ -274,15 +289,15 @@ static void draw_line_card(card_t* c, int margin, int y, int w, int bottom) {
   for (i = first; i < n && y + lh <= bottom; i++) {
     card_line_t* L = &c->lines[i];
     int start_y = y;
-    if (g_reveal & (1u << i)) {
+    if (g_reveal & (1ull << i)) {
       int used = draw_wrapped(L->text ? L->text : "", margin, y, w - margin * 2 - px(8), bottom,
                              BOBO_FONT_TITLE, false);
       y = used + px(2);
     } else {
-      char blank[128];
+      char blank[512];
       int bn = 0;
       int nb = L->blanks > 0 ? L->blanks : 4;
-      if (nb > 32) nb = 32;
+      if (nb > 128) nb = 128;
       for (int k = 0; k < nb && bn < (int)sizeof(blank) - 4; k++) {
         memcpy(blank + bn, "＿", 3);
         bn += 3;
@@ -651,10 +666,10 @@ int app_main(int argc, char* argv[]) {
   int top = bobo_draw_header("Anki 卡片");
   draw_wrapped("正在读取…", px(16), top + px(24), bobo_screen_width() - px(32), bobo_screen_height(), BOBO_FONT_BODY,
                false);
-  bobo_refresh(BOBO_REFRESH_HALF);
+  bobo_refresh(BOBO_REFRESH_FAST);
   scan_files();
   g_page = 0;
-  draw(BOBO_REFRESH_HALF);   /* 首屏 */
+  draw(BOBO_REFRESH_FAST);   /* 首屏 */
   for (;;) {
     bobo_event_t ev;
     if (!bobo_wait_event(&ev, 30000)) continue;
@@ -783,16 +798,16 @@ int app_main(int argc, char* argv[]) {
       } else if (g_page == 2) {
         if (id == 760) {
           card_t* c2 = &g.cards[g_queue[g_qi]];
-          g_reveal = c2->nlines >= 31 ? 0xffffffffu : ((1u << c2->nlines) - 1);
+          g_reveal = c2->nlines >= 64 ? 0xffffffffffffffffull : ((1ull << c2->nlines) - 1);
           g_show_back = 1;
           g_scroll = 0;
           draw(BOBO_REFRESH_FAST);
-        } else if (id >= 700 && id < 740) {
+        } else if (id >= 700 && id < 764) {
           card_t* c2 = &g.cards[g_queue[g_qi]];
           int li = id - 700;
           if (li < c2->nlines) {
-            g_reveal |= (1u << li);
-            uint32_t all = c2->nlines >= 31 ? 0xffffffffu : ((1u << c2->nlines) - 1);
+            g_reveal |= (1ull << li);
+            uint64_t all = c2->nlines >= 64 ? 0xffffffffffffffffull : ((1ull << c2->nlines) - 1);
             if (g_reveal == all) {
               g_show_back = 1;
               g_scroll = 0;

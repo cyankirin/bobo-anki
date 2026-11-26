@@ -306,7 +306,6 @@ static int card_cb(int64_t rowid, sqlite_rec_t* r, void* vctx) {
 #define ANKI_MAX_MODELS 24
 #define ANKI_MAX_FIELDS 20
 #define ANKI_NAME_LEN 20
-#define ANKI_FLD_LEN 1536
 
 typedef struct {
   int64_t mid;
@@ -447,13 +446,22 @@ typedef struct {
 
 static int hash_nid(int64_t nid, int size) { return (int)(((uint64_t)nid * 2654435761u) % (uint32_t)size); }
 
-static char s_fld[ANKI_MAX_FIELDS][ANKI_FLD_LEN];
-static char s_rawq[8192];
+static char* s_fld[ANKI_MAX_FIELDS];
+static char s_rawq[16384];
+
+static int utf8_count(const char* s) {
+  int n = 0;
+  while (*s) {
+    if ((*s & 0xc0) != 0x80) n++;
+    s++;
+  }
+  return n;
+}
 
 static int build_blanks(const char* raw, char* out, int cap, card_line_t** lines_out, uint8_t* nlines_out) {
   int n = 0, found = 0;
   card_line_t* lines = NULL;
-  int cap_lines = 40;
+  int cap_lines = 64;
   lines = (card_line_t*)calloc((size_t)cap_lines, sizeof(card_line_t));
   const char* p = raw;
   while (p && *p) {
@@ -478,9 +486,19 @@ static int build_blanks(const char* raw, char* out, int cap, card_line_t** lines
         fd++;
       }
       chars = whole + (frac >= 50 ? 1 : 0);
-      if (chars < 2) chars = 2;
-      if (chars > 32) chars = 32;
     }
+    char tmp[2048];
+    int tl = 0;
+    const char* t = strstr(lab, "<span class=\"t\">");
+    const char* gt = t ? strchr(t, '>') : NULL;
+    const char* te = t ? strstr(t, "</span>") : NULL;
+    if (gt && te && (!end || te < end) && gt < te) {
+      clean_html((const uint8_t*)(gt + 1), (int)(te - (gt + 1)), tmp, (int)sizeof(tmp));
+      tl = (int)strlen(tmp);
+    }
+    if (tl > 0) chars = utf8_count(tmp);
+    if (chars < 2) chars = 2;
+    if (chars > 128) chars = 128;
     if (n > 0 && n < cap - 1) out[n++] = '\n';
     for (int i = 0; i < chars && n < cap - 4; i++) {
       memcpy(out + n, "＿", 3);
@@ -490,19 +508,11 @@ static int build_blanks(const char* raw, char* out, int cap, card_line_t** lines
     if (lines && found < cap_lines) {
       card_line_t* L = &lines[found];
       L->blanks = (uint16_t)chars;
-      const char* t = strstr(lab, "<span class=\"t\">");
-      const char* gt = t ? strchr(t, '>') : NULL;
-      const char* te = t ? strstr(t, "</span>") : NULL;
-      if (gt && te && (!end || te < end) && gt < te) {
-        char tmp[ANKI_FLD_LEN];
-        clean_html((const uint8_t*)(gt + 1), (int)(te - (gt + 1)), tmp, ANKI_FLD_LEN);
-        int tl = (int)strlen(tmp);
+      if (tl > 0) {
         L->text = (char*)malloc((size_t)tl + 1);
         if (L->text) memcpy(L->text, tmp, (size_t)tl + 1);
       }
-      if (!L->text) {
-        L->text = (char*)calloc(1, 1);
-      }
+      if (!L->text) L->text = (char*)calloc(1, 1);
     }
     found++;
     p = end ? end + 8 : lab + 6;
@@ -523,6 +533,12 @@ static void append_str(char* buf, int* n, int cap, const char* s) {
 
 static void append_line(char* buf, int* n, int cap, const char* s) {
   if (*n > 0 && buf[*n - 1] != '\n') append_str(buf, n, cap, "\n");
+  append_str(buf, n, cap, s);
+}
+
+static void append_option(char* buf, int* n, int cap, const char* prefix, const char* s) {
+  if (*n > 0 && buf[*n - 1] != '\n') append_str(buf, n, cap, "\n");
+  append_str(buf, n, cap, prefix);
   append_str(buf, n, cap, s);
 }
 
@@ -552,17 +568,29 @@ static int answer_matches(const char* ans, int opt, const char* text) {
 
 static void render_note(card_t* c, model_t* m, const char* flds, int flen) {
   int nf = 0, start = 0, rawidx = 0;
+  int nfields = 0;
+  for (int i = 0; i <= flen && nfields < ANKI_MAX_FIELDS; i++)
+    if (i == flen || flds[i] == 0x1f) nfields++;
+  char* pool = (char*)malloc((size_t)flen + (size_t)nfields + 2);
+  if (!pool) {
+    c->front = (char*)calloc(1, 1);
+    c->back = (char*)calloc(1, 1);
+    return;
+  }
+  char* poolp = pool;
   s_rawq[0] = 0;
-  for (int i = 0; i <= flen && nf < ANKI_MAX_FIELDS; i++) {
+  for (int i = 0; i <= flen && nf < ANKI_MAX_FIELDS && nf < nfields; i++) {
     if (i == flen || flds[i] == 0x1f) {
+      int seglen = i - start;
       if (m && rawidx == m->q) {
-        int len = i - start;
+        int len = seglen;
         if (len > (int)sizeof(s_rawq) - 1) len = (int)sizeof(s_rawq) - 1;
         if (len > 0) memcpy(s_rawq, flds + start, (size_t)len);
         s_rawq[len > 0 ? len : 0] = 0;
       }
       rawidx++;
-      clean_html((const uint8_t*)flds + start, i - start, s_fld[nf], ANKI_FLD_LEN);
+      s_fld[nf] = poolp;
+      clean_html((const uint8_t*)flds + start, seglen, s_fld[nf], seglen + 1);
       strip_cloze(s_fld[nf]);
       /* trim */
       char* b = s_fld[nf];
@@ -570,6 +598,7 @@ static void render_note(card_t* c, model_t* m, const char* flds, int flen) {
       int len = (int)strlen(b);
       while (len > 0 && (b[len - 1] == ' ' || b[len - 1] == '\n' || b[len - 1] == '\r')) b[--len] = 0;
       if (b != s_fld[nf]) memmove(s_fld[nf], b, (size_t)len + 1);
+      poolp += strlen(s_fld[nf]) + 1;
       nf++;
       start = i + 1;
     }
@@ -604,7 +633,7 @@ static void render_note(card_t* c, model_t* m, const char* flds, int flen) {
     if (bk) append_line(s_back, &bk, sizeof(s_back), "");
     /* templates that blank out every line: show the blanks, reveal on answer */
     int nb = 0;
-    if (strstr(s_rawq, "class=\"d\"") && strstr(s_rawq, "class=\"t\"")) {
+    if (s_rawq[0] && strstr(s_rawq, "class=\"d\"") && strstr(s_rawq, "class=\"t\"")) {
       nb = build_blanks(s_rawq, s_front + fn, (int)sizeof(s_front) - fn, &c->lines, &c->nlines);
       if (nb > 0) fn = (int)strlen(s_front);
     }
@@ -628,12 +657,8 @@ static void render_note(card_t* c, model_t* m, const char* flds, int flen) {
   for (int i = 0; i < m->nopt && m->opt[i] < nf; i++) {
     int fi = m->opt[i];
     if (!s_fld[fi][0]) continue;
-    char line[ANKI_FLD_LEN + 8];
-    if (has_letter_prefix(s_fld[fi], i))
-      snprintf(line, sizeof(line), "%s", s_fld[fi]);
-    else
-      snprintf(line, sizeof(line), "%s%s", option_prefix(i), s_fld[fi]);
-    append_line(s_front, &hn, sizeof(s_front), line);
+    const char* pfx = has_letter_prefix(s_fld[fi], i) ? "" : option_prefix(i);
+    append_option(s_front, &hn, sizeof(s_front), pfx, s_fld[fi]);
     show++;
   }
   if (show == 0) append_line(s_front, &hn, sizeof(s_front), s_fld[m->q]);
@@ -675,15 +700,12 @@ static void render_note(card_t* c, model_t* m, const char* flds, int flen) {
     append_line(s_back, &bn, sizeof(s_back), line);
     for (int i = 0; i < m->nopt && m->opt[i] < nf; i++) {
       if (!answer_matches(ansf, i, s_fld[m->opt[i]])) continue;
-      char ol[ANKI_FLD_LEN + 8];
-      if (has_letter_prefix(s_fld[m->opt[i]], i))
-        snprintf(ol, sizeof(ol), "%s", s_fld[m->opt[i]]);
-      else
-        snprintf(ol, sizeof(ol), "%s%s", option_prefix(i), s_fld[m->opt[i]]);
-      append_line(s_back, &bn, sizeof(s_back), ol);
+      const char* pfx = has_letter_prefix(s_fld[m->opt[i]], i) ? "" : option_prefix(i);
+      append_option(s_back, &bn, sizeof(s_back), pfx, s_fld[m->opt[i]]);
     }
   }
 out:
+  free(pool);
   c->front = (char*)malloc(strlen(s_front) + 1);
   c->back = (char*)malloc(strlen(s_back) + 1);
   if (c->front && c->back) {

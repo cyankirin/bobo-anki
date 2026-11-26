@@ -3,7 +3,7 @@
 
 #define ANKI_MAX_CARDS 12000
 #define ANKI_MAX_DECKS 64
-#define ANKI_TEXT_MAX 3072
+#define ANKI_TEXT_MAX 8192
 
 typedef struct {
   int64_t id;

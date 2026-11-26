@@ -1384,42 +1384,6 @@ int anki_backup(anki_t* a) {
   return bobo_file_write(name, s_buf, len) ? 0 : -1;
 }
 
-#define HIDDEN_MAGIC "BHID"
-
-int anki_hidden_load(anki_t* a) {
-  char name[40];
-  progress_name(a, name, sizeof(name), 'h');
-  int n = bobo_file_read(name, s_buf, sizeof(s_buf));
-  if (n < 8 || memcmp(s_buf, HIDDEN_MAGIC, 4) != 0) return -1;
-  int cnt;
-  memcpy(&cnt, s_buf + 4, sizeof(cnt));
-  if (cnt < 0 || cnt > ANKI_MAX_DECKS) return -1;
-  if ((size_t)n < 8 + (size_t)cnt * sizeof(int64_t)) return -1;
-  for (int i = 0; i < cnt; i++) {
-    int64_t id;
-    memcpy(&id, s_buf + 8 + (size_t)i * sizeof(int64_t), sizeof(id));
-    for (int j = 0; j < a->ndecks; j++)
-      if (a->decks[j].id == id) a->decks[j].hidden = 1;
-  }
-  bobo_log("anki: hidden decks=%d", cnt);
-  return 0;
-}
-
-int anki_hidden_save(anki_t* a) {
-  char name[40];
-  int cnt = 0;
-  memcpy(s_buf, HIDDEN_MAGIC, 4);
-  for (int i = 0; i < a->ndecks; i++) {
-    if (!a->decks[i].hidden) continue;
-    memcpy(s_buf + 8 + (size_t)cnt * sizeof(int64_t), &a->decks[i].id, sizeof(int64_t));
-    cnt++;
-  }
-  memcpy(s_buf + 4, &cnt, sizeof(cnt));
-  size_t len = 8 + (size_t)cnt * sizeof(int64_t);
-  progress_name(a, name, sizeof(name), 'h');
-  return bobo_file_write(name, s_buf, len) ? 0 : -1;
-}
-
 int anki_restore(anki_t* a) {
   char name[40];
   progress_name(a, name, sizeof(name), 'b');

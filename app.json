@@ -3,7 +3,7 @@
   "name": "Anki 卡片",
   "name_zh_hant": "Anki 卡片",
   "name_en": "Anki Cards",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "api": 6,
   "elf": "app.elf",
   "category": "study",
@@ -22,9 +22,9 @@
     "读取 TF 卡：/Anki 目录下的 apkg 卡组文件"
   ],
   "changelog": [
+    "0.2.9: 刷新策略改为首屏/重画 HALF、其余交互 FAST，降低墨水屏全刷次数与耗电。",
     "0.2.8: 思澈改用 sf57 目标（ARMv8-M 硬浮点、-mlong-calls、无 PLT），ELF 目录仍为 elf/sf32lb57。",
-    "0.2.7: 思澈 ELF 目录按商店要求改为 elf/sf32lb57/app.elf。",
-    "0.2.6: 增加 4.7 寸 思澈（sifli_gyd7n6 / SF32LB57）ARM 版本，安装包同时含 S3、S31、思澈三个 ELF。"
+    "0.2.7: 思澈 ELF 目录按商店要求改为 elf/sf32lb57/app.elf。"
   ],
   "developer": "BoBo 用户"
 }

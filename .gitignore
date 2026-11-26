@@ -1,0 +1,12 @@
+# build / package output
+dist/
+build/
+*.zip
+
+# local test harness
+.tmptest/
+*.o
+*.elf
+
+# editor
+.DS_Store

@@ -1,0 +1,30 @@
+{
+  "id": "bobo-anki",
+  "name": "Anki 卡片",
+  "name_zh_hant": "Anki 卡片",
+  "name_en": "Anki Cards",
+  "version": "0.2.8",
+  "api": 6,
+  "elf": "app.elf",
+  "category": "study",
+  "description": "读取 TF 卡 Anki 文件夹里的 apkg 卡组，按 Anki 的间隔重复算法复习，进度存在设备上。",
+  "details": "把 .apkg 卡组放进 TF 卡的 /Anki 目录，打开应用选择卡组即可开始复习。\n支持新卡 → 学习步进 → 复习的学习流程，四档评分（忘记、困难、良好、简单）按 Anki 的 ease 与间隔规则计算下次时间。\n普通正反面卡组直接显示正反面；选择题按模板字段显示题干、A/B/C/D 选项与正确答案。\n进度存在应用自己的 user/ 目录，更新应用后保留。",
+  "features": [
+    "读取 TF 卡 /Anki 目录下的 apkg 卡组",
+    "按题型显示题号、题干与 A/B/C/D 选项，答案页只留正确项",
+    "Anki 式新卡、学习、复习、重学队列",
+    "每个牌组独立配额，可继续学习",
+    "撤销上一步",
+    "四档评分、每日统计",
+    "进度本地保存，可备份与恢复"
+  ],
+  "permissions": [
+    "读取 TF 卡：/Anki 目录下的 apkg 卡组文件"
+  ],
+  "changelog": [
+    "0.2.8: 思澈改用 sf57 目标（ARMv8-M 硬浮点、-mlong-calls、无 PLT），ELF 目录仍为 elf/sf32lb57。",
+    "0.2.7: 思澈 ELF 目录按商店要求改为 elf/sf32lb57/app.elf。",
+    "0.2.6: 增加 4.7 寸 思澈（sifli_gyd7n6 / SF32LB57）ARM 版本，安装包同时含 S3、S31、思澈三个 ELF。"
+  ],
+  "developer": "BoBo 用户"
+}

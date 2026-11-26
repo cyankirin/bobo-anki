@@ -89,6 +89,10 @@ static int linebuf_need(int n) {
 static int draw_wrapped_skip(const char* text, int x, int y, int w, int max_y, int font, bool bold, int skip, int* drawn) {
   int lh = bobo_line_height(font) + px(4);
   int cur_y = y, line_w = 0, idx = 0, n_drawn = 0;
+  /* Leave room for two full-width glyphs on the right; without this the last
+   * one or two characters sit partly outside the panel on the S31 build. */
+  int guard = bobo_text_width(font, "汉字", bold);
+  if (guard > 0 && w > guard * 2) w -= guard;
   if (!linebuf_need((int)strlen(text) + 1)) return y;
   char* buf = g_linebuf;
   const char* line_start = text;
@@ -679,7 +683,7 @@ int app_main(int argc, char* argv[]) {
       return 0;
     }
     if (ev.type == BOBO_EV_REDRAW) {
-      draw(BOBO_REFRESH_HALF);
+      draw(BOBO_REFRESH_FAST);
       continue;
     }
     if (ev.type == BOBO_EV_BUTTON) {

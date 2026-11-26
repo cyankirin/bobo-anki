@@ -3,7 +3,7 @@
 
 #define ANKI_MAX_CARDS 12000
 #define ANKI_MAX_DECKS 64
-#define ANKI_TEXT_MAX 640
+#define ANKI_TEXT_MAX 3072
 
 typedef struct {
   int64_t id;
@@ -13,6 +13,7 @@ typedef struct {
   int extra_new;  /* today's extra allowance from "continue" */
   int ans_today;
   int again_today;
+  uint8_t hidden; /* empty deck hidden on this device; apkg itself is read-only */
 } deck_t;
 
 typedef struct {
@@ -67,6 +68,10 @@ int anki_progress_save(anki_t* a);
 
 /* Raise today's new-card allowance for one deck ("continue learning"). */
 void anki_more_new(anki_t* a, int64_t did, int extra);
+
+/* Hidden empty decks, stored beside progress (TF card stays read-only). */
+int anki_hidden_load(anki_t* a);
+int anki_hidden_save(anki_t* a);
 
 /* Backup / restore progress inside the app folder. */
 int anki_backup(anki_t* a);

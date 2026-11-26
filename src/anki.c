@@ -200,7 +200,7 @@ static int clean_html(const uint8_t* src, int len, char* out, int cap) {
       /* <br>, <div>, <p>, </div>, </p> -> newline */
       if ((src[i + 1] == 'b' && src[i + 2] == 'r') || (src[i + 1] == '/' && (src[i + 2] == 'd' || src[i + 2] == 'p')) ||
           src[i + 1] == 'd' || src[i + 1] == 'p') {
-        if (n > 0 && out[n - 1] != '\n') out[n++] = '\n';
+        if (n > 0 && out[n - 1] != '\n' && n < cap - 1) out[n++] = '\n';
       }
       i = j;
       continue;
@@ -230,6 +230,7 @@ static int clean_html(const uint8_t* src, int len, char* out, int cap) {
       continue;
     }
     if (c == '\r') continue;
+    if (c == '\n' && n > 0 && out[n - 1] == '\n') continue;
     out[n++] = c;
   }
   out[n] = 0;
@@ -305,7 +306,7 @@ static int card_cb(int64_t rowid, sqlite_rec_t* r, void* vctx) {
 #define ANKI_MAX_MODELS 24
 #define ANKI_MAX_FIELDS 20
 #define ANKI_NAME_LEN 20
-#define ANKI_FLD_LEN 512
+#define ANKI_FLD_LEN 1536
 
 typedef struct {
   int64_t mid;
@@ -447,7 +448,7 @@ typedef struct {
 static int hash_nid(int64_t nid, int size) { return (int)(((uint64_t)nid * 2654435761u) % (uint32_t)size); }
 
 static char s_fld[ANKI_MAX_FIELDS][ANKI_FLD_LEN];
-static char s_rawq[4096];
+static char s_rawq[8192];
 
 static int build_blanks(const char* raw, char* out, int cap, card_line_t** lines_out, uint8_t* nlines_out) {
   int n = 0, found = 0;
@@ -478,7 +479,7 @@ static int build_blanks(const char* raw, char* out, int cap, card_line_t** lines
       }
       chars = whole + (frac >= 50 ? 1 : 0);
       if (chars < 2) chars = 2;
-      if (chars > 12) chars = 12;
+      if (chars > 32) chars = 32;
     }
     if (n > 0 && n < cap - 1) out[n++] = '\n';
     for (int i = 0; i < chars && n < cap - 4; i++) {
@@ -1358,6 +1359,42 @@ int anki_backup(anki_t* a) {
   char name[40];
   if (build_srs(a, s_buf, sizeof(s_buf), &len) != 0) return -1;
   progress_name(a, name, sizeof(name), 'b');
+  return bobo_file_write(name, s_buf, len) ? 0 : -1;
+}
+
+#define HIDDEN_MAGIC "BHID"
+
+int anki_hidden_load(anki_t* a) {
+  char name[40];
+  progress_name(a, name, sizeof(name), 'h');
+  int n = bobo_file_read(name, s_buf, sizeof(s_buf));
+  if (n < 8 || memcmp(s_buf, HIDDEN_MAGIC, 4) != 0) return -1;
+  int cnt;
+  memcpy(&cnt, s_buf + 4, sizeof(cnt));
+  if (cnt < 0 || cnt > ANKI_MAX_DECKS) return -1;
+  if ((size_t)n < 8 + (size_t)cnt * sizeof(int64_t)) return -1;
+  for (int i = 0; i < cnt; i++) {
+    int64_t id;
+    memcpy(&id, s_buf + 8 + (size_t)i * sizeof(int64_t), sizeof(id));
+    for (int j = 0; j < a->ndecks; j++)
+      if (a->decks[j].id == id) a->decks[j].hidden = 1;
+  }
+  bobo_log("anki: hidden decks=%d", cnt);
+  return 0;
+}
+
+int anki_hidden_save(anki_t* a) {
+  char name[40];
+  int cnt = 0;
+  memcpy(s_buf, HIDDEN_MAGIC, 4);
+  for (int i = 0; i < a->ndecks; i++) {
+    if (!a->decks[i].hidden) continue;
+    memcpy(s_buf + 8 + (size_t)cnt * sizeof(int64_t), &a->decks[i].id, sizeof(int64_t));
+    cnt++;
+  }
+  memcpy(s_buf + 4, &cnt, sizeof(cnt));
+  size_t len = 8 + (size_t)cnt * sizeof(int64_t);
+  progress_name(a, name, sizeof(name), 'h');
   return bobo_file_write(name, s_buf, len) ? 0 : -1;
 }
 

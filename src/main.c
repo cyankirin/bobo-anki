@@ -8,7 +8,7 @@ static uint32_t now_local(void);
 
 static anki_t g;
 static char g_err[200];
-static int g_page; /* 0 files, 1 decks, 2 study, 3 done, 4 stats */
+static int g_page; /* 0 files, 1 decks, 2 study, 3 done, 4 stats, 5 apkg actions */
 static char g_msg[96];
 static char g_files[24][72];
 static int g_nfiles;
@@ -20,6 +20,8 @@ static uint32_t g_reveal;
 static int64_t g_deck;
 static char g_title[64];
 static int g_dirty;
+static int g_sel_file;          /* file selected by a long press */
+static int g_stats_from_files;  /* stats opened from the apkg action sheet */
 typedef struct {
   int valid;
   int qi;
@@ -73,7 +75,7 @@ static int utf8_len(const char* s) {
 static int draw_wrapped_skip(const char* text, int x, int y, int w, int max_y, int font, bool bold, int skip, int* drawn) {
   int lh = bobo_line_height(font) + px(4);
   int cur_y = y, line_w = 0, idx = 0, n_drawn = 0;
-  char buf[1024];
+  char buf[2048];
   const char* line_start = text;
   for (const char* p = text;;) {
     if (!*p || *p == '\n') {
@@ -170,13 +172,19 @@ static void draw_files(void) {
     y = draw_wrapped(g_err, margin, y, w - margin * 2, bobo_screen_height() - px(20), BOBO_FONT_SMALL, false) + px(10);
     bobo_draw_line(margin, y - px(6), w - margin, y - px(6), 1, false);
   }
-  int rowh = px(76);
+  int rowh = px(70);
+  int footer = g_nfiles > 0 ? px(44) : 0;
   for (int i = 0; i < g_nfiles; i++) {
-    if (y + rowh > bobo_screen_height()) break;
+    if (y + rowh > bobo_screen_height() - footer) break;
     bobo_draw_text(BOBO_FONT_TITLE, margin, y + px(8), g_files[i], true, false);
     bobo_draw_line(margin, y + rowh - px(8), w - margin, y + rowh - px(8), 1, false);
     zone_add(margin, y, w - margin * 2, rowh, 100 + i);
     y += rowh;
+  }
+  if (g_nfiles > 0) {
+    const char* hint = "长按 apkg 可查看学习统计";
+    int tw = bobo_text_width(BOBO_FONT_SMALL, hint, false);
+    bobo_draw_text(BOBO_FONT_SMALL, (w - tw) / 2, bobo_screen_height() - px(26), hint, true, false);
   }
   bobo_refresh(g_refresh);
 }
@@ -197,9 +205,11 @@ static void draw_decks(void) {
   int h = bobo_screen_height();
   int margin = px(16);
   int y = top + px(8);
-  int footer = px(76);
+  int footer = px(58);
   int rowh = px(96);
+  int shown = 0;
   for (int i = 0; i < g.ndecks; i++) {
+    if (g.decks[i].hidden) continue;
     if (y + rowh > h - footer) break;
     int nn, ln, dn, tt;
     anki_counts(&g, g.decks[i].id, &nn, &ln, &dn, &tt);
@@ -214,21 +224,16 @@ static void draw_decks(void) {
     bobo_draw_line(margin, y + rowh - px(6), w - margin, y + rowh - px(6), 1, false);
     zone_add(margin, y, w - margin * 2, rowh, 600 + i);
     y += rowh;
+    shown++;
   }
-  if (g_msg[0]) {
-    bobo_draw_text(BOBO_FONT_SMALL, margin, h - footer - px(18), g_msg, true, false);
+  if (shown == 0) {
+    draw_wrapped("这里没有可学习的牌组。长按 apkg 可查看统计或恢复进度。", margin, y + px(8),
+                 w - margin * 2, h - footer, BOBO_FONT_BODY, false);
   }
-  int gap = px(8);
-  int bw = (w - margin * 2 - gap * 2) / 3;
-  int by = h - px(64);
-  const char* labels[3] = {"统计", "备份进度", "恢复进度"};
-  for (int i = 0; i < 3; i++) {
-    int bx = margin + i * (bw + gap);
-    bobo_draw_round_rect(bx, by, bw, px(48), 1, px(8), true);
-    int tw = bobo_text_width(BOBO_FONT_BODY, labels[i], true);
-    bobo_draw_text(BOBO_FONT_BODY, bx + (bw - tw) / 2, by + px(10), labels[i], true, true);
-    zone_add(bx, by, bw, px(48), 220 + i);
-  }
+  if (g_msg[0]) bobo_draw_text(BOBO_FONT_SMALL, margin, h - footer - px(26), g_msg, true, false);
+  const char* hint = "长按空白牌组可删除（仅本机生效）";
+  int tw = bobo_text_width(BOBO_FONT_SMALL, hint, false);
+  bobo_draw_text(BOBO_FONT_SMALL, (w - tw) / 2, h - px(24), hint, true, false);
   bobo_refresh(g_refresh);
 }
 
@@ -264,7 +269,9 @@ static void draw_line_card(card_t* c, int margin, int y, int w, int bottom) {
     bobo_draw_text(BOBO_FONT_TITLE, margin, y, head, true, true);
     y += lh + px(6);
   }
-  for (i = 0; i < n && y + lh <= bottom; i++) {
+  int first = g_scroll;
+  if (n > 0 && first > n - 1) first = n - 1;
+  for (i = first; i < n && y + lh <= bottom; i++) {
     card_line_t* L = &c->lines[i];
     int start_y = y;
     if (g_reveal & (1u << i)) {
@@ -272,28 +279,33 @@ static void draw_line_card(card_t* c, int margin, int y, int w, int bottom) {
                              BOBO_FONT_TITLE, false);
       y = used + px(2);
     } else {
-      char blank[80];
+      char blank[128];
       int bn = 0;
       int nb = L->blanks > 0 ? L->blanks : 4;
-      if (nb > 12) nb = 12;
+      if (nb > 32) nb = 32;
       for (int k = 0; k < nb && bn < (int)sizeof(blank) - 4; k++) {
         memcpy(blank + bn, "＿", 3);
         bn += 3;
       }
       blank[bn] = 0;
-      bobo_draw_text(BOBO_FONT_TITLE, margin, y, blank, true, false);
-      y += lh;
+      int used = draw_wrapped(blank, margin, y, w - margin * 2 - px(8), bottom, BOBO_FONT_TITLE, false);
+      y = used + px(2);
     }
     zone_add(margin, start_y - px(2), w - margin * 2, y - start_y + px(4), 700 + i);
   }
   /* keep line ids stable: add zones for the visible ones only */
-  const char* hint = "点空白行显示该行";
-  /* shortcut: reveal all lines and rate */
-  int bw = bobo_text_width(BOBO_FONT_SMALL, "显示全部", true) + px(20);
+  const char* hint = g_scroll > 0 ? "上滑回前几句 · 点空白行显示" : "点空白行显示；句子多可上下滑动";
+  /* shortcut: reveal all lines and rate; sized as a real button */
+  const char* all = "显示全部";
+  int bw = bobo_text_width(BOBO_FONT_BODY, all, true) + px(34);
+  int bh = px(48);
   int bx = bobo_screen_width() - margin - bw;
-  bobo_draw_text(BOBO_FONT_SMALL, bx + px(10), bobo_screen_height() - px(50), "显示全部", true, false);
-  zone_add(bx, bobo_screen_height() - px(62), bw, px(38), 760);
-  int hy = bobo_screen_height() - px(24);
+  int by = bobo_screen_height() - px(88);
+  bobo_draw_round_rect(bx, by, bw, bh, 1, px(10), true);
+  bobo_draw_text(BOBO_FONT_BODY, bx + (bw - bobo_text_width(BOBO_FONT_BODY, all, true)) / 2,
+                 by + (bh - bobo_line_height(BOBO_FONT_BODY)) / 2, all, true, true);
+  zone_add(bx - px(8), by - px(8), bw + px(16), bh + px(16), 760);
+  int hy = bobo_screen_height() - px(22);
   bobo_draw_text(BOBO_FONT_SMALL, bobo_screen_width() / 2 - bobo_text_width(BOBO_FONT_SMALL, hint, false) / 2, hy,
                  hint, true, false);
 }
@@ -311,18 +323,26 @@ static void draw_study(void) {
   }
   card_t* c = &g.cards[g_queue[g_qi]];
   int y = top + px(8);
-  /* progress line */
-  if (g_undo.valid) {
-    bobo_draw_text(BOBO_FONT_SMALL, margin, y, "撤销上一步", true, false);
-    zone_add(margin, y - px(4), px(90), bobo_line_height(BOBO_FONT_SMALL) + px(8), 350);
-  }
+  /* progress line: undo gets a real button-sized target */
+  int bar_h = bobo_line_height(BOBO_FONT_BODY);
   char sub[64];
   snprintf(sub, sizeof(sub), "%d / %d", g_qi + 1, g_qn);
-  bobo_draw_text(BOBO_FONT_SMALL, w - margin - bobo_text_width(BOBO_FONT_SMALL, sub, false), y, sub, true, false);
-  y += bobo_line_height(BOBO_FONT_SMALL) + px(8);
+  int sub_w = bobo_text_width(BOBO_FONT_SMALL, sub, false);
+  if (g_undo.valid) {
+    const char* u = "撤销上一步";
+    int uw = bobo_text_width(BOBO_FONT_BODY, u, true) + px(28);
+    int uh = px(42);
+    bobo_draw_round_rect(margin, y - px(4), uw, uh, 1, px(8), true);
+    bobo_draw_text(BOBO_FONT_BODY, margin + px(14), y + (uh - bar_h) / 2 - px(2), u, true, true);
+    zone_add(margin, y - px(10), uw, uh + px(12), 350);
+    y += uh + px(2);
+  } else {
+    y += bobo_line_height(BOBO_FONT_SMALL) + px(8);
+  }
+  bobo_draw_text(BOBO_FONT_SMALL, w - margin - sub_w, y - bobo_line_height(BOBO_FONT_SMALL) - px(8), sub, true, false);
   int rating_h = g_show_back ? px(72) : 0;
   int bottom = h - px(10) - rating_h - (g_show_back ? px(16) : 0);
-  int text_bottom = bottom - px(26);
+  int text_bottom = (!g_show_back && c->nlines > 0) ? h - px(104) : bottom - px(26);
   bobo_draw_line(margin, y, w - margin, y, 1, false);
   y += px(10);
   /* one side at a time, using the whole page; swipe scrolls long text */
@@ -495,7 +515,9 @@ static void draw_stats(void) {
   char line[128];
   bobo_draw_text(BOBO_FONT_SMALL, margin, y, g_title, true, false);
   y += bobo_line_height(BOBO_FONT_SMALL) + px(8);
+  int shown = 0;
   for (int i = 0; i < g.ndecks && y + px(96) < h - px(70); i++) {
+    if (g.decks[i].hidden) continue;
     deck_t* d = &g.decks[i];
     int nn, ln, dn, tt;
     anki_counts(&g, d->id, &nn, &ln, &dn, &tt);
@@ -509,11 +531,49 @@ static void draw_stats(void) {
              g.new_per_day + d->extra_new, d->rev_done, g.rev_per_day, d->ans_today, acc);
     bobo_draw_text(BOBO_FONT_SMALL, margin, y, line, true, false);
     y += bobo_line_height(BOBO_FONT_SMALL) + px(8);
-    if (i + 1 < g.ndecks) bobo_draw_line(margin, y - px(4), w - margin, y - px(4), 1, false);
+    shown++;
+    if (shown > 1) bobo_draw_line(margin, y - px(4), w - margin, y - px(4), 1, false);
   }
+  const char* back = g_stats_from_files ? "返回列表" : "返回牌组";
   bobo_draw_line(margin, h - px(64), w - margin, h - px(64), 1, false);
-  bobo_draw_text(BOBO_FONT_SMALL, w / 2 - bobo_text_width(BOBO_FONT_SMALL, "返回牌组", false) / 2, h - px(40),
-                 "返回牌组", true, false);
+  bobo_draw_text(BOBO_FONT_SMALL, w / 2 - bobo_text_width(BOBO_FONT_SMALL, back, false) / 2, h - px(40),
+                 back, true, false);
+  bobo_refresh(g_refresh);
+}
+
+static void draw_actions(void) {
+  bobo_clear();
+  zone_clear();
+  int top = bobo_draw_header("apkg 操作");
+  int w = bobo_screen_width();
+  int h = bobo_screen_height();
+  int margin = px(16);
+  int y = top + px(10);
+  bobo_draw_text(BOBO_FONT_TITLE, margin, y, g_files[g_sel_file], true, true);
+  y += bobo_line_height(BOBO_FONT_TITLE) + px(4);
+  bobo_draw_text(BOBO_FONT_SMALL, margin, y, "只对这个 apkg 生效，不会影响其他文件", true, false);
+  y += bobo_line_height(BOBO_FONT_SMALL) + px(14);
+
+  const char* labels[4] = {"查看学习统计", "备份学习进度", "恢复学习进度", "恢复隐藏的牌组"};
+  const char* descs[4] = {"看这个 apkg 的今日进度和正确率", "把当前进度另存一份", "回到上次备份时的进度",
+                          "把本机隐藏的空牌组找回来"};
+  int rowh = px(76);
+  for (int i = 0; i < 4; i++) {
+    bobo_draw_round_rect(margin, y, w - margin * 2, rowh, 1, px(10), true);
+    bobo_draw_text(BOBO_FONT_BODY, margin + px(16), y + px(8), labels[i], true, true);
+    bobo_draw_text(BOBO_FONT_SMALL, margin + px(16), y + px(42), descs[i], true, false);
+    zone_add(margin, y, w - margin * 2, rowh, 800 + i);
+    y += rowh + px(8);
+  }
+  if (g_msg[0]) {
+    bobo_draw_text(BOBO_FONT_SMALL, margin, y + px(2), g_msg, true, true);
+    y += bobo_line_height(BOBO_FONT_SMALL) + px(8);
+  }
+  int by = h - px(74);
+  bobo_draw_round_rect(margin, by, w - margin * 2, px(50), 1, px(10), true);
+  int tw = bobo_text_width(BOBO_FONT_BODY, "取消", true);
+  bobo_draw_text(BOBO_FONT_BODY, (w - tw) / 2, by + (px(50) - bobo_line_height(BOBO_FONT_BODY)) / 2, "取消", true, true);
+  zone_add(margin, by, w - margin * 2, px(50), 900);
   bobo_refresh(g_refresh);
 }
 
@@ -523,19 +583,23 @@ static void draw(int mode) {
   else if (g_page == 1) draw_decks();
   else if (g_page == 2) draw_study();
   else if (g_page == 4) draw_stats();
+  else if (g_page == 5) draw_actions();
   else draw_done();
 }
 
 /* ---------- actions ---------- */
 
-static void open_file(int idx) {
-  if (idx < 0 || idx >= g_nfiles) return;
+static void show_loading(const char* name) {
   bobo_clear();
   zone_clear();
-  int top = bobo_draw_header(g_files[idx]);
+  int top = bobo_draw_header(name);
   draw_wrapped("正在读取卡组…", px(16), top + px(24), bobo_screen_width() - px(32), bobo_screen_height() - px(40),
                BOBO_FONT_BODY, false);
   bobo_refresh(BOBO_REFRESH_FAST);
+}
+
+static int load_file(int idx) {
+  if (idx < 0 || idx >= g_nfiles) return -1;
   char path[300];
   snprintf(path, sizeof(path), "/Anki/%s", g_files[idx]);
   if (g.cards) {
@@ -544,19 +608,34 @@ static void open_file(int idx) {
   }
   memset(&g, 0, sizeof(g));
   int r = anki_load(&g, path, g_err, sizeof(g_err));
-  if (r != 0) {
+  if (r != 0) return -1;
+  g.today = anki_today();
+  g.now = now_local();
+  anki_progress_load(&g);
+  anki_hidden_load(&g);
+  g_err[0] = 0;
+  g_msg[0] = 0;
+  snprintf(g_title, sizeof(g_title), "%.60s", g_files[idx]);
+  return 0;
+}
+
+static void open_file(int idx) {
+  if (idx < 0 || idx >= g_nfiles) return;
+  show_loading(g_files[idx]);
+  if (load_file(idx) != 0) {
     g_page = 0;
     draw(BOBO_REFRESH_FAST);
     return;
   }
-  g.today = anki_today();
-  g.now = now_local();
-  anki_progress_load(&g);
-  g_err[0] = 0;
-  snprintf(g_title, sizeof(g_title), "%.60s", g_files[idx]);
-  if (g.ndecks == 1) {
+  int only = -1, vis = 0;
+  for (int i = 0; i < g.ndecks; i++) {
+    if (g.decks[i].hidden) continue;
+    vis++;
+    only = i;
+  }
+  if (vis == 1) {
     g_page = 1;
-    start_deck(g.decks[0].id);
+    start_deck(g.decks[only].id);
     draw(BOBO_REFRESH_FAST);
     return;
   }
@@ -591,7 +670,11 @@ int app_main(int argc, char* argv[]) {
     if (ev.type == BOBO_EV_BUTTON) {
       if (ev.button == BOBO_BTN_BACK) {
         if (g_page == 4) {
-          g_page = 1;
+          g_page = g_stats_from_files ? 0 : 1;
+          g_stats_from_files = 0;
+          draw(BOBO_REFRESH_FAST);
+        } else if (g_page == 5) {
+          g_page = 0;
           draw(BOBO_REFRESH_FAST);
         } else if (g_page == 2 || g_page == 1) {
           anki_progress_save(&g);
@@ -616,9 +699,11 @@ int app_main(int argc, char* argv[]) {
       continue;
     }
     if (ev.type == BOBO_EV_SWIPE && g_page == 2) {
+      card_t* sc = &g.cards[g_queue[g_qi]];
+      int max_scroll = (!g_show_back && sc->nlines > 0) ? (sc->nlines > 1 ? sc->nlines - 1 : 0) : 240;
       if (ev.dy < 0) {
         g_scroll += 2;
-        if (g_scroll > 240) g_scroll = 240;
+        if (g_scroll > max_scroll) g_scroll = max_scroll;
         draw(BOBO_REFRESH_FAST);
       } else if (ev.dy > 0 && g_scroll > 0) {
         g_scroll -= 2;
@@ -630,18 +715,77 @@ int app_main(int argc, char* argv[]) {
     if (ev.type == BOBO_EV_TAP || ev.type == BOBO_EV_LONG_TAP) {
       int id = zone_hit(ev.x, ev.y);
       if (g_page == 0 && id >= 100 && id < 124) {
-        open_file(id - 100);
+        int idx = id - 100;
+        if (idx < g_nfiles) {
+          if (ev.type == BOBO_EV_LONG_TAP) {
+            g_sel_file = idx;
+            g_msg[0] = 0;
+            g_page = 5;
+            draw(BOBO_REFRESH_FAST);
+          } else {
+            open_file(idx);
+          }
+        }
+      } else if (g_page == 5) {
+        if (id == 900) {
+          g_page = 0;
+          draw(BOBO_REFRESH_FAST);
+        } else if (id >= 800 && id <= 803) {
+          show_loading(g_files[g_sel_file]);
+          if (load_file(g_sel_file) != 0) {
+            g_page = 0;
+            draw(BOBO_REFRESH_FAST);
+          } else if (id == 800) {
+            g_stats_from_files = 1;
+            g_page = 4;
+            draw(BOBO_REFRESH_FAST);
+          } else if (id == 801) {
+            anki_progress_save(&g);
+            snprintf(g_msg, sizeof(g_msg), anki_backup(&g) == 0 ? "已备份这个 apkg 的学习进度" : "备份失败");
+            g_page = 5;
+            draw(BOBO_REFRESH_FAST);
+          } else if (id == 802) {
+            snprintf(g_msg, sizeof(g_msg), anki_restore(&g) == 0 ? "已恢复；重新进入卡组后按恢复的进度继续"
+                                                                 : "这个 apkg 还没有备份");
+            g_page = 5;
+            draw(BOBO_REFRESH_FAST);
+          } else {
+            int n = 0;
+            for (int i = 0; i < g.ndecks; i++) {
+              if (g.decks[i].hidden) n++;
+              g.decks[i].hidden = 0;
+            }
+            anki_hidden_save(&g);
+            snprintf(g_msg, sizeof(g_msg), n > 0 ? "已恢复隐藏的牌组" : "没有隐藏的牌组");
+            g_page = 5;
+            draw(BOBO_REFRESH_FAST);
+          }
+        }
       } else if (g_page == 1 && id >= 600 && id < 600 + ANKI_MAX_DECKS) {
         int di = id - 600;
-        if (di < g.ndecks) {
-          start_deck(g.decks[di].id);
-          draw(BOBO_REFRESH_FAST);
+        if (di < g.ndecks && !g.decks[di].hidden) {
+          if (ev.type == BOBO_EV_LONG_TAP) {
+            int nn, ln, dn, tt;
+            anki_counts(&g, g.decks[di].id, &nn, &ln, &dn, &tt);
+            if (tt == 0) {
+              g.decks[di].hidden = 1;
+              anki_hidden_save(&g);
+              snprintf(g_msg, sizeof(g_msg), "已删除空牌组 %s（仅本机）", g.decks[di].name);
+            } else {
+              snprintf(g_msg, sizeof(g_msg), "只能删除 0 张卡的空牌组");
+            }
+            draw(BOBO_REFRESH_FAST);
+          } else {
+            start_deck(g.decks[di].id);
+            draw(BOBO_REFRESH_FAST);
+          }
         }
       } else if (g_page == 2) {
         if (id == 760) {
           card_t* c2 = &g.cards[g_queue[g_qi]];
           g_reveal = c2->nlines >= 31 ? 0xffffffffu : ((1u << c2->nlines) - 1);
           g_show_back = 1;
+          g_scroll = 0;
           draw(BOBO_REFRESH_FAST);
         } else if (id >= 700 && id < 740) {
           card_t* c2 = &g.cards[g_queue[g_qi]];
@@ -649,7 +793,10 @@ int app_main(int argc, char* argv[]) {
           if (li < c2->nlines) {
             g_reveal |= (1u << li);
             uint32_t all = c2->nlines >= 31 ? 0xffffffffu : ((1u << c2->nlines) - 1);
-            if (g_reveal == all) g_show_back = 1;
+            if (g_reveal == all) {
+              g_show_back = 1;
+              g_scroll = 0;
+            }
             draw(BOBO_REFRESH_FAST);
           }
         } else if (id == 350) {
@@ -663,18 +810,6 @@ int app_main(int argc, char* argv[]) {
           answer(id - 400);
           draw(BOBO_REFRESH_FAST);
         }
-      } else if (g_page == 1 && id >= 220 && id <= 222) {
-        if (id == 220) {
-          g_page = 4;
-          draw(BOBO_REFRESH_FAST);
-        } else if (id == 221) {
-          anki_progress_save(&g);
-          snprintf(g_msg, sizeof(g_msg), anki_backup(&g) == 0 ? "已备份到 user/srs-backup.bin" : "备份失败");
-          draw(BOBO_REFRESH_FAST);
-        } else {
-          snprintf(g_msg, sizeof(g_msg), anki_restore(&g) == 0 ? "已从备份恢复，重新进入卡组生效" : "没有可用的备份");
-          draw(BOBO_REFRESH_FAST);
-        }
       } else if (g_page == 3 && id == 500) {
         g_page = 1;
         draw(BOBO_REFRESH_FAST);
@@ -683,7 +818,8 @@ int app_main(int argc, char* argv[]) {
         start_deck(g_deck);
         draw(BOBO_REFRESH_FAST);
       } else if (g_page == 4) {
-        g_page = 1;
+        g_page = g_stats_from_files ? 0 : 1;
+        g_stats_from_files = 0;
         draw(BOBO_REFRESH_FAST);
       }
     }
